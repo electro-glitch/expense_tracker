@@ -1,0 +1,57 @@
+name: expense_tracker
+description: "Smart Social Expense & Budget Analyzer"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  
+  # Firebase
+  firebase_core: ^3.10.1
+  firebase_auth: ^5.5.0
+  cloud_firestore: ^5.6.2
+  firebase_storage: ^12.4.0
+  firebase_messaging: ^15.2.2
+  
+  # State Management
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # Navigation
+  go_router: ^14.7.2
+
+  # UI & Charts
+  fl_chart: ^0.70.0
+  intl: ^0.20.2
+  google_fonts: ^6.2.1
+  flutter_local_notifications: ^18.0.1
+  timezone: ^0.9.4
+
+  # Receipt Scanning & AI
+  image_picker: ^1.1.2
+  google_generative_ai: ^0.4.5
+
+  # Google Sign In (restored)
+  google_sign_in: ^6.2.1
+
+  # Utilities
+  logger: ^2.5.0
+  freezed_annotation: ^2.4.4
+  json_annotation: ^4.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.15
+  riverpod_generator: ^2.6.4
+  freezed: ^2.5.8
+  json_serializable: ^6.9.3
+
+flutter:
+  uses-material-design: true
