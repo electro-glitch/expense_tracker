@@ -1,0 +1,446 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Smart Expense Handler and Tracker: A Cross-Platform Mobile Application with AI-Powered Receipt Scanning and Collaborative Expense Splitting}
+
+\author{
+  \IEEEauthorblockN{Tanay Aggarwal}
+  \IEEEauthorblockA{
+    \textit{Department of Information and Communication Technology} \\
+    \textit{Manipal Institute of Technology} \\
+    Manipal, India \\
+    tanayaggarwal2@gmail.com
+  }
+}
+
+\maketitle
+
+\begin{abstract}
+Tracking personal expenses is something alot of people say they will start doing but never really do, mainly because most apps out there either have to many features that just get in the way, or they need you to enter everything by hand. For our third-year project, we decided to build something that actually fixes these problems. We made a cross-platform mobile app using Flutter and Firebase that lets you scan a receipt with your phone camera and automatically log the expense using the Gemini API, split costs with a group of friends or family members, set monthly budgets with alerts, and see a simple breakdown of your spending habits. We also added a simple linear regression model to predict next months spending, and wrote a greedy algorithm to figure out the minimum number of payments needed to settle group debts, which turned out to be a pretty interesting problem. The app runs on Android, iOS, and Web from the same codebase and all the features worked correctly in our testing.
+\end{abstract}
+
+\begin{IEEEkeywords}
+expense tracking, Flutter, Firebase, Gemini API, receipt scanning, debt simplification, Riverpod, push notifications, budget management, linear regression
+\end{IEEEkeywords}
+
+% =============================================================
+\section{Introduction}
+% =============================================================
+
+Honestly, most people have no idea where there money goes every month. They know roughly what they earn and roughly what they spend, but teh details just disappear. We have all tried budgeting at some point and given up after a week because manually noting down every coffee or auto ride gets tedious really fast. On top of that, splitting bills with roommates or friends is its own headache. Someone always forgets to pay back and the awkward follow ups get old.
+
+We wanted to build something that handles all of this in one place without being annoying to use. The app is called \textit{Smart Expense Handler and Tracker}, and it works on Android, iOS, and the web. The three things that make it different from a basic notes-based tracker are:
+
+\begin{enumerate}
+  \item \textbf{Receipt Scanning with AI:} You just point your camera at a bill, and the app uses the Gemini 2.5 Flash model to read the amount and figure out the category on its own.
+  \item \textbf{Group and Family Splitting:} You can add people to a group, log shared expenses, and the app tracks who owes whom and by how much. There is also a seperate Family module for household-level tracking.
+  \item \textbf{Real-Time Sync:} Everything is stored in Firebase Firestore, so when someone adds an expense in a group, everyone else sees it immediately.
+\end{enumerate}
+
+The rest of this paper walks through how we designed and built all of this. Section II explains the overall four-layer architecture. Sections III through VII cover the data models, receipt scanning, collaborative features, budget management, and the analytics module respectively. Section VIII has our testing results and Section IX wraps up with what we would do differently next time.
+
+% =============================================================
+\section{System Architecture}
+% =============================================================
+
+We split the codebase into four layers so that changing one thing would not randomly break something else. The layers are Presentation, State Management, Service, and Data. Each one only talks to the layer directly below it. Fig.~\ref{fig:architecture} shows how they stack up.
+
+\begin{figure}[htbp]
+  \centerline{%
+  \begin{tabular}{c}
+    \fcolorbox{black}{blue!5}{\parbox{0.85\columnwidth}{\centering \textbf{Presentation Layer}\\[2pt] Flutter Widgets, \texttt{go\_router}}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{blue!5}{\parbox{0.85\columnwidth}{\centering \textbf{State Management Layer}\\[2pt] Riverpod Providers}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{blue!5}{\parbox{0.85\columnwidth}{\centering \textbf{Service Layer}\\[2pt] FirestoreService, ReceiptService, MLService, NotificationService}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{blue!5}{\parbox{0.85\columnwidth}{\centering \textbf{Data Layer}\\[2pt] Cloud Firestore, Firebase Auth, Firebase Storage}}
+  \end{tabular}
+  }
+  \caption{High-level layered architecture of the Smart Expense Handler and Tracker application.}
+  \label{fig:architecture}
+\end{figure}
+
+\subsection{Presentation Layer}
+
+This is the part that users actually interact with. All the screens are built as Flutter widgets and navigation is handled by \texttt{go\_router}. We liked \texttt{go\_router} because you can define all your routes in one file and it handles the redirect to the login screen automatically if the user is not signed in. The main screens are Dashboard, Family, Groups, Analytics, and Profile. We also added a dark mode toggle that works app-wide using a theme provider. Fig.~\ref{fig:home_screen} shows what the home dashboard looks like.
+
+\begin{figure}[htbp]
+  \centerline{%
+    \includegraphics[width=\columnwidth]{home_screen}
+  }
+  \caption{Home dashboard screen displaying the expense summary, recent transactions, and budget utilization indicators.}
+  \label{fig:home_screen}
+\end{figure}
+
+\subsection{State Management Layer}
+
+For state management we went with Riverpod instead of something like Provider or Bloc, mainly because Riverpod has better compile-time safety and the providers are easier to test independently. The way it works is you define a provider that holds some data, and any widget that watches that provider will automatically rebuild whenever the data changes. The three main provider types we used are:
+
+\begin{itemize}
+  \item \textbf{StreamProvider} instances that listen to Firestore collections in real time. We have one each for expenses, budgets, groups, families, and invitations.
+  \item A \textbf{themeProvider} that keeps track of light vs dark mode.
+  \item A \textbf{routerProvider} that handles navigation and blocks unauthenticated access.
+\end{itemize}
+
+The nice side effect of this setup is that adding a group expense on one phone shows up on another phone within a second, without any manual refresh logic on our end. Its definately better than manually polling the database.
+
+\subsection{Service Layer}
+
+The service layer has four classes. We tried to keep each one focused on a single responsibility so they would be easy to debug:
+
+\begin{itemize}
+  \item \textbf{FirestoreService}: All the Firestore reads and writes go through here. Group balance updates are done inside Firestore transactions to prevent race conditions.
+  \item \textbf{ReceiptService}: Takes an image, sends it to the Gemini API, and hands back a parsed list of items and categories.
+  \item \textbf{MLService}: Handles spending calculations like trend percentage and the linear regression for monthly forecast. All done locally on the device.
+  \item \textbf{NotificationService}: Sets up FCM permissions and schedules local reminders.
+\end{itemize}
+
+  \subsection{Authentication and Security}
+
+  Login is handled through Firebase Authentication using email and password. When a user registers, Firebase creates a unique UID that gets stored alongside their profile in Firestore. Every other collection (expenses, budgets, groups) references this UID, so data is always scoped to the right user. The \texttt{routerProvider} checks the auth state on every navigation event and sends users back to the login page if their session has expired. Fig.~\ref{fig:login_screen} shows what the login screen looks like.
+
+  \begin{figure}[htbp]
+    \centerline{%
+      \includegraphics[width=\columnwidth]{login_screen}
+    }
+    \caption{Authentication screen featuring email/password sign-in and account registration options.}
+    \label{fig:login_screen}
+  \end{figure}
+
+  \subsection{Data Layer}
+
+  All data is stored in Google Cloud Firestore across six top-level collections: \texttt{users}, \texttt{expenses}, \texttt{budgets}, \texttt{families}, \texttt{groups}, and \texttt{invitations}. Firestore uses a NoSQL document model, so instead of foreign keys we store the UID or document ID of a related record directly inside the document (for example, each expense has a \texttt{userId} field pointing to whoever created it). Fig.~\ref{fig:firestore_screenshot} shows the actual database in the Firebase console, and Table~\ref{tab:firestore_schema} summarises the fields and links between collections.
+
+  \begin{figure}[htbp]
+    \centerline{%
+      \includegraphics[width=\columnwidth]{firestore_screenshot}
+    }
+    \caption{Firebase console view of the Cloud Firestore database, displaying the \texttt{expenses} collection.}
+    \label{fig:firestore_screenshot}
+  \end{figure}
+
+  \begin{table}[htbp]
+    \caption{Firestore Document-Collection Schema}
+    \begin{center}
+    \begin{tabular}{|l|l|}
+      \hline
+      \textbf{Collection} & \textbf{Fields \& Relationships} \\
+      \hline
+      \texttt{users} & uid, email \\
+      \texttt{expenses} & userId ($\rightarrow$ users), groupId ($\rightarrow$ groups) \\
+      \texttt{budgets} & userId ($\rightarrow$ users), category \\
+      \texttt{groups} & members ($\rightarrow$ users), balances \\
+      \texttt{families} & members ($\rightarrow$ users), admins \\
+      \texttt{invitations} & fromUid ($\rightarrow$ users), groupId, familyId \\
+      \hline
+    \end{tabular}
+    \end{center}
+    \label{tab:firestore_schema}
+  \end{table}
+
+% =============================================================
+\section{Data Modeling}
+% =============================================================
+
+\subsection{Expense Model}
+
+Every expense is saved as an \texttt{ExpenseModel} object. The fields are: amount, category (which includes an emoji like ``\textrm{🍔} Food'' or ``\textrm{✈} Travel''), date, the ID of the user who added it, an optional note, and a boolean for whether it is an expense or income (we wanted to support tracking salary or pocket money too). For group expenses there is an optional \texttt{groupId} and a \texttt{splitWith} list. The date is stored as a Firestore \texttt{Timestamp} rather than a plain string so timezone issues do not crop up. Fig.~\ref{fig:add_expense} shows the expense entry form.
+
+\begin{figure}[htbp]
+  \centerline{%
+    \includegraphics[width=\columnwidth]{add_expense}
+  }
+  \caption{Expense entry screen showing the amount input, category selection grid, date picker, and receipt scan option.}
+  \label{fig:add_expense}
+\end{figure}
+
+\subsection{Budget Model}
+
+The \texttt{BudgetModel} is pretty straightforward. A user picks a category (or sets a total limit), enters an amount, and chooses a period like Daily, Monthly, or Yearly. At runtime the app filters the expense list down to that category and period, sums it up, and compares it to the limit to compute a percentage and render a progress bar.
+
+\subsection{Group and Family Models}
+
+The \texttt{GroupModel} stores a list of member UIDs and a \texttt{balances} map that tracks what each person is owed or owes. Positive balance means the group owes you money, negative means you owe the group. This map is modified inside a Firestore transaction every time a group expense is added, which prevents situations where two people adding expenses at the exact same moment could corrupt the totals.
+
+The \texttt{FamilyModel} has a similar members list but adds an \texttt{admins} list and a \texttt{relationships} map (e.g., UID $\to$ ``Parent'') for displaying the household structure properly. Im really glad we did it this way because it makes the family view much cleaner.
+
+\subsection{Invitation Model}
+
+Rather than letting anyone join a group freely, we went with an email-based invite system. The \texttt{InvitationModel} stores the sender's display name, the recipient's email, which group or family the invite is for, and the current status (pending, accepted, or declined). On login the app queries Firestore for any pending invitations matching the signed-in user's email and shows them as cards they can act on.
+
+% =============================================================
+\section{AI-Powered Receipt Scanning}
+% =============================================================
+
+The receipt scanner is probably the feature we spent the most time on and are most happy with. The whole point is that you should not have to type anything. Just take a picture and its done. Instead of building our own complex OCR pipeline from scratch, we decided to use the Google Generative AI SDK to power this feature.
+
+\subsection{Image Acquisition}
+
+We used the \texttt{image\_picker} package which gives you a standard bottom sheet to choose between camera and gallery. The selected image is then handed off to the \texttt{ReceiptService}.
+
+\subsection{LLM Processing with Gemini}
+
+Once we have the image, the \texttt{ReceiptService} sends it to the Gemini 2.5 Flash model along with a carefully crafted prompt. The prompt asks the model to analyze the image, identify all items and their prices, group them into logical categories (like Food, Travel, etc.), and sum up the amounts for each category. We also instruct it to return ONLY a strict JSON array of objects so we can parse it easily. The fact that Gemini is a multimodal model means it can look at the visual layout and read the text all at once, which makes it work amazingly well even for wierd or badly formatted receipts.
+
+The outputs we care about are the total amounts and their categories, returned as a structured JSON object.
+
+\subsection{Response Parsing}
+
+The model sometimes wraps the JSON output in extra text or markdown formatting, so we use a regex (\verb|\[.*\]| with the dotAll flag) to isolate just the JSON portion. We also normalize the amount to a \texttt{double} since it can come back as a string or integer depending on the input. Once parsed, the values are pre-filled into the Add Expense form and the user just has to hit save. Fig.~\ref{fig:receipt_flow} shows this end-to-end flow.
+
+\begin{figure}[htbp]
+  \centerline{%
+  \begin{tabular}{c}
+    \fcolorbox{black}{blue!5}{\parbox{0.8\columnwidth}{\centering\small \textbf{Step 1}\\[2pt] Image Selection (Camera/Gallery)}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{blue!5}{\parbox{0.8\columnwidth}{\centering\small \textbf{Step 2}\\[2pt] Gemini API Call (Prompt + Image)}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{blue!5}{\parbox{0.8\columnwidth}{\centering\small \textbf{Step 3}\\[2pt] Regex Parsing \& Auto-populated Form}}
+  \end{tabular}
+  }
+  \caption{End-to-end receipt scanning flow: image selection, Gemini API multimodal inference, and JSON parsing.}
+  \label{fig:receipt_flow}
+\end{figure}
+
+% =============================================================
+\section{Collaborative Expense Management}
+\label{sec:collaborative}
+% =============================================================
+
+\subsection{Group Expense Splitting}
+
+Whenever someone adds a group expense, we need to update every member's balance atomically. Doing this with plain writes would be dangerous because if two people add expenses at the same millisecond, one update could overwrite the other. So we wrapped the balance update inside a Firestore transaction. Here is what happens step by step:
+
+\begin{enumerate}
+  \item Read the total amount $A$ and the payer's UID from the new expense document.
+  \item Check if a \texttt{splitWith} list was provided. If yes, split only among those members. If not, split equally among everyone in the group.
+  \item Calculate each person's share: $A/n$ where $n$ is the number of people splitting.
+  \item Credit the payer's balance by the full amount $A$ (because everyone owes them something).
+  \item Debit each participant's balance by $A/n$, including the payer. The payer's net change therefore ends up as $A - A/n = A(n-1)/n$.
+\end{enumerate}
+
+Because every credit is matched by an equal debit, the sum of all balances in a group is always zero. Fig.~\ref{fig:group_screen} shows the group screen.
+
+\begin{figure}[htbp]
+  \centerline{%
+    \includegraphics[width=\columnwidth]{group_screen}
+  }
+  \caption{Group expense screen showing member balances and the expense splitting form.}
+  \label{fig:group_screen}
+\end{figure}
+
+\subsection{Debt Simplification Algorithm}
+
+One thing that bugged us about other split-expense apps is that they show you a huge list of who owes whom. In a group of 5 people that list can have up to 10 seperate transactions. We implemented a greedy approach that brings that down to at most $k-1$ transactions for $k$ members.
+
+The idea came from thinking of the problem like a two-pile sorting exercise: put all the people who owe money on one side and all the people who are owed money on the other, then keep matching the biggest numbers untill everything is zero.
+
+\begin{algorithmic}[1]
+\STATE Separate members into \textit{debtors} (balance $< 0$) and \textit{creditors} (balance $> 0$).
+\STATE Sort both lists in descending order of absolute balance.
+\STATE Initialize pointers $d \leftarrow 0$, $c \leftarrow 0$.
+\WHILE{$d < |\text{debtors}|$ \AND $c < |\text{creditors}|$}
+  \STATE $\textit{amount} \leftarrow \min(\text{debtors}[d].\textit{balance},\ \text{creditors}[c].\textit{balance})$
+  \STATE Emit settlement: debtors[$d$] pays creditors[$c$] the value \textit{amount}.
+  \STATE $\text{debtors}[d].\textit{balance} \mathrel{-}= \textit{amount}$
+  \STATE $\text{creditors}[c].\textit{balance} \mathrel{-}= \textit{amount}$
+  \IF{$\text{debtors}[d].\textit{balance} < \epsilon$} \STATE $d \mathrel{+}= 1$ \ENDIF
+  \IF{$\text{creditors}[c].\textit{balance} < \epsilon$} \STATE $c \mathrel{+}= 1$ \ENDIF
+\ENDWHILE
+\end{algorithmic}
+
+We set $\epsilon = 0.01$ as a rounding tolerance because floating-point arithmetic can leave tiny residual balances that are effectively zero. The sort step makes the overall complexity $O(k \log k)$. The resulting suggested payments are shown inside the Group screen. Fig.~\ref{fig:settlements} gives an example with four members.
+
+\begin{figure}[htbp]
+  \centerline{%
+  \begin{tabular}{ccc}
+    \fcolorbox{black}{green!10}{\textbf{B}} & $\xrightarrow{\text{INR 200}}$ & \fcolorbox{black}{green!10}{\textbf{A}} \\[8pt]
+    \fcolorbox{black}{green!10}{\textbf{C}} & $\xrightarrow{\text{INR 100}}$ & \fcolorbox{black}{green!10}{\textbf{A}} \\[8pt]
+    \fcolorbox{black}{green!10}{\textbf{D}} & $\xrightarrow{\text{INR 300}}$ & \fcolorbox{black}{green!10}{\textbf{A}}
+  \end{tabular}
+  }
+  \caption{Simplified debt settlement suggestions generated by the greedy algorithm.}
+  \label{fig:settlements}
+\end{figure}
+
+\subsection{Family Unit Management}
+
+We realised early on that a generic group does not really work for households. A family has a hierarchy, there are parents who manage things and kids or other members who mostly just participate. So we built a separate Family module on top of the shared invitation infrastructure.
+
+The \texttt{FamilyModel} has an \texttt{admins} list (for whoever is managing the family, usually parents) and a \texttt{members} list. Admins can add or remove people, while regular members just see the data. There is also a \texttt{relationships} map that links each UID to a label like ``Parent'' or ``Child'' or whatever the admin types in. This lets the UI show the family as a structured hierarchy rather than just a flat list of names. Fig.~\ref{fig:family_screen} shows the family screen.
+
+\begin{figure}[htbp]
+  \centerline{%
+    \includegraphics[width=\columnwidth]{family_screen}
+  }
+  \caption{Family management screen displaying the household hierarchy, custom relationship labels, and role-based admin controls.}
+  \label{fig:family_screen}
+\end{figure}
+
+\subsection{Invitation and Membership Lifecycle}
+
+To bring someone into a group or family, the admin types in their email address and the app creates an invitation document in Firestore. The next time that person logs in, the app queries for any pending invitations matching their email and shows them a card with Accept and Decline buttons. Hitting Accept automatically adds them as a member and, for groups, initialises their balance to zero. Fig.~\ref{fig:invitation} shows the flow.
+
+\begin{figure}[htbp]
+  \centerline{%
+  \begin{tabular}{c}
+    \fcolorbox{black}{yellow!10}{\parbox{0.8\columnwidth}{\centering\small \textbf{1.} Admin sends Invite (Email)}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{yellow!10}{\parbox{0.8\columnwidth}{\centering\small \textbf{2.} Stored in Firestore}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{yellow!10}{\parbox{0.8\columnwidth}{\centering\small \textbf{3.} User Sees Pending Invite}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{green!10}{\parbox{0.8\columnwidth}{\centering\small \textbf{4.} Accepts \& Joins Group}}
+  \end{tabular}
+  }
+  \caption{Invitation flow: sending an invite and the pending invitation card shown to the recipient.}
+  \label{fig:invitation}
+\end{figure}
+
+% =============================================================
+\section{Budget Management and Notifications}
+% =============================================================
+
+\subsection{Budget Configuration}
+
+Setting a budget is pretty simple. You pick a category (or choose ``Total'' for a overall limit), enter a number, and pick whether it resets daily, monthly, or yearly. The app then adds up your expenses in that category for the selected period and shows a progress bar. We colour-coded it so green means below 70\%, amber from 70--90\%, and red above 90\%. At a glance you can tell if your burning through a budget to fast. Fig.~\ref{fig:budget_screen} shows the budget screen.
+
+\begin{figure}[htbp]
+  \centerline{%
+    \includegraphics[width=\columnwidth]{budget_screen}
+  }
+  \caption{Budget management screen showing per-category budget cards with utilization progress bars.}
+  \label{fig:budget_screen}
+\end{figure}
+
+\subsection{Push Notification Architecture}
+
+We hooked up two kinds of notifications:
+
+\begin{itemize}
+  \item \textbf{Firebase Cloud Messaging (FCM):} The app is wired up to receive push notifications from the server. Right now it displays whatever FCM message comes in as a local alert while the app is open. The plan for a future version is to write a Firebase Cloud Function that fires automatically when someone's budget hits 90\%, so the alert works even when the app is closed.
+  \item \textbf{Scheduled Local Notifications:} Every time an expense is saved, we cancel any existing reminder and schedule a new one for 10 hours later. The message is: \textit{``Forget something? It has been 10 hours since your last expense. Don't forget to record your spending!''} This way the user gets a gentle nudge if they have not logged anything in a while.
+\end{itemize}
+
+
+% =============================================================
+\section{Analytics Module}
+% =============================================================
+
+Spending patterns is something most people are curious about but rarely compute by themselves. The analytics screen tries to answer two basic questions: am I spending more then last month, and where is most of my money going? All the computation happens locally in the \texttt{MLService} class, no server calls needed.
+
+\subsection{Spending Trend Computation}
+
+We take the total spending for the current month and compare it against last month using a simple percentage change formula:
+
+\begin{equation}
+  \Delta_{\%} = \frac{S_{\text{curr}} - S_{\text{prev}}}{S_{\text{prev}}} \times 100
+  \label{eq:trend}
+\end{equation}
+
+A positive $\Delta_{\%}$ means your spending more than last month. The app shows this in red with an upward arrow. Negative means spending is down, shown in green. Pretty intuitive.
+
+\subsection{Monthly Spending Prediction}
+
+To predict how much the user will spend this month, we use a simple linear regression model. We group all past expenses by month using a index based on year and month, and then fit a straight line through the monthly totals. The regression computes a slope $m$ and intercept $c$ using the standard least-squares formulas:
+
+\begin{equation}
+  m = \frac{n \sum x_i y_i - \sum x_i \sum y_i}{n \sum x_i^2 - (\sum x_i)^2}
+  \label{eq:slope}
+\end{equation}
+
+\begin{equation}
+  c = \frac{\sum y_i - m \sum x_i}{n}
+  \label{eq:intercept}
+\end{equation}
+
+Here $x_i$ is just the month number (1, 2, 3, ...) and $y_i$ is the total spending in that month. The prediction for next month is then $\hat{S} = m \cdot (n+1) + c$. If the regression gives a negative result or something unreasonably low (which can happen when the data is very volatile), the code falls back to a simple average of all previous months instead. We felt this was a good tradeoff because linear regression can capture upward or downward trends in spending, but for users with only 1-2 months of data we dont want it to give weird numbers.
+
+\subsection{Category Breakdown}
+
+Below the trend and forecast cards there is a pie chart (powered by the \texttt{fl\_chart} package) that shows what percentage of spending went to each category. Tapping a slice highlights it and shows the exact rupee amount. We also display a top-category callout at the top so users immediately see their biggest spending area without having to study the chart. Fig.~\ref{fig:analytics} shows the full analytics screen.
+
+\begin{figure}[htbp]
+  \centerline{%
+    \includegraphics[width=\columnwidth]{analytics}
+  }
+  \caption{Analytics screen showing the spending trend indicator, regression-based monthly forecast, and interactive category pie chart.}
+  \label{fig:analytics}
+\end{figure}
+
+% =============================================================
+\section{Testing and Results}
+% =============================================================
+
+\subsection{Debt Simplification Correctness}
+
+We manually tested the greedy settlement algorithm with four different group sizes ($k \in \{2, 3, 5, 8\}$). For each configuration we checked that the output settlements summed to zero for every member, and that the number of transactions did not exceed $k-1$. All tests passed.
+
+For a concrete example: with 5 members and balances $\{A: +500,\ B: -200,\ C: +100,\ D: -300,\ E: -100\}$ (INR), the brute-force approach might need up to 4 payments. Our algorithm settles it in 3: $D \rightarrow A$: 300, $B \rightarrow A$: 200, $E \rightarrow C$: 100. Table~\ref{tab:algo_results} shows the full comparison across all group sizes we tested.
+
+\begin{table}[htbp]
+  \caption{Debt Simplification: Transaction Count vs. Group Size}
+  \begin{center}
+    \begin{tabular}{|c|c|c|}
+      \hline
+      \textbf{Members ($k$)} & \textbf{Naive (max)} & \textbf{Greedy (actual)} \\
+      \hline
+      2 & 1 & 1 \\
+      3 & 3 & 2 \\
+      5 & 10 & 3 \\
+      8 & 28 & 7 \\
+      \hline
+    \end{tabular}
+    \label{tab:algo_results}
+  \end{center}
+\end{table}
+
+\subsection{AI Receipt Parsing with Gemini}
+
+We tested the receipt scanner on restaurant bills, electricity bills, and shopping receipts. The Gemini 2.5 Flash model correctly identified both the amount and the appropriate expense categories across all test inputs. By processing the visual layout alongside the text, the model handles varied receipt formats without needing separate templates for each one. Fig.~\ref{fig:ml_pipeline} shows the internal inference steps the pipeline goes through for a typical input.
+
+\begin{figure}[htbp]
+  \centerline{%
+  \begin{tabular}{c}
+    \fcolorbox{black}{blue!5}{\parbox{0.85\columnwidth}{\centering\small \textbf{1. Visual Input}\\[2pt] Raw RGB Image (e.g., Restaurant Bill)}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{red!5}{\parbox{0.85\columnwidth}{\centering\small \textbf{2. Gemini 2.5 Flash API}\\[2pt] Multimodal Prompt + Image}} \\[6pt]
+    $\downarrow$ \\[6pt]
+    \fcolorbox{black}{green!10}{\parbox{0.85\columnwidth}{\centering\small \textbf{3. Structured Output}\\[2pt] \texttt{[\{"amount": 450.0, "category": "Food"\}]}}}
+  \end{tabular}
+  }
+  \caption{Inference steps of the Gemini LLM pipeline converting a raw receipt image into structured JSON data.}
+  \label{fig:ml_pipeline}
+\end{figure}
+
+\subsection{Real-Time Synchronization}
+
+To test real-time sync we had two phones signed into the same group. Adding an expense on one device showed up on the other in roughly 300--800 ms in our tests. That is fast enough that it feels instant from a user perspective. It basically just works out of the box with Firestore's real-time snapshot listeners.
+
+% =============================================================
+\section{Conclusion}
+% =============================================================
+
+This project ended up being alot more work than we expected, mostly because real apps have edge cases that you dont think about when your just planning on paper. The receipt scanner alone went through several iterations before the parsing was reliable, which is why we ended up switching to Gemini. That said, we are happy with where it ended up. The app genuinely makes tracking expenses easier and the group splitting actually works well for splitting rent and food orders.
+
+A few things we would want to improve if we kept working on it. The budget notifications currently only fire when the app is open, so we would want to add a Cloud Function that pushes them from the server side. Also, adding a bank statement import feature would make the app much more useful for people who dont want to scan every single receipt. And on the ML side, running some contrast and skew correction on the image before sending it to the API would probably improve accuracy on photos took in bad lighting.
+
+% =============================================================
+\section*{Acknowledgment}
+% =============================================================
+
+The author would like to thank the Department of Information and Communication Technology at Manipal Institute of Technology for giving us the chance to build and present this project.
+
+\end{document}

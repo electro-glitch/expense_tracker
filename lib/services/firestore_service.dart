@@ -64,7 +64,6 @@ class FirestoreService {
     await _db.collection('expenses').doc(expense.id).set(expense.toJson());
 
     // Schedule a reminder notification for 10 hours from now
-    // Every time an expense is added, we push the notification 10 hours into the future
     await _notificationService.scheduleReminder();
 
     // If part of a group, update balances via transaction
@@ -93,15 +92,12 @@ class FirestoreService {
                 (key, value) => MapEntry(key, (value as num).toDouble()),
               );
               
-              // Ensure all members exist in balance map
               for (var m in members) {
                 updatedBalances.putIfAbsent(m, () => 0.0);
               }
 
-              // 1. Credit payer
               updatedBalances[payerId] = (updatedBalances[payerId] ?? 0.0) + amount;
               
-              // 2. Debit participants
               for (final memberId in splitWithIds) {
                 updatedBalances[memberId] = (updatedBalances[memberId] ?? 0.0) - splitAmount;
               }
@@ -114,6 +110,48 @@ class FirestoreService {
         print('Transaction failed: $e');
         rethrow;
       }
+    }
+  }
+
+  Future<void> settleDebt(String groupId, String fromId, String toId, double amount) async {
+    try {
+      await _db.runTransaction((transaction) async {
+        final groupRef = _db.collection('groups').doc(groupId);
+        final groupDoc = await transaction.get(groupRef);
+        
+        if (groupDoc.exists) {
+          final groupData = groupDoc.data()!;
+          final Map<String, dynamic> rawBalances = Map<String, dynamic>.from(groupData['balances'] ?? {});
+          
+          final Map<String, double> updatedBalances = rawBalances.map(
+            (key, value) => MapEntry(key, (value as num).toDouble()),
+          );
+          
+          // 'fromId' is paying back, so their debt decreases (balance goes up)
+          updatedBalances[fromId] = (updatedBalances[fromId] ?? 0.0) + amount;
+          // 'toId' is receiving, so their credit decreases (balance goes down)
+          updatedBalances[toId] = (updatedBalances[toId] ?? 0.0) - amount;
+          
+          transaction.update(groupRef, {'balances': updatedBalances});
+          
+          // Optional: Record this as a special settlement transaction in expenses
+          final settlementId = DateTime.now().millisecondsSinceEpoch.toString();
+          final settlementExpense = ExpenseModel(
+            id: settlementId,
+            userId: fromId,
+            amount: amount,
+            category: 'Settlement 🤝',
+            date: DateTime.now(),
+            note: 'Settled debt with group member',
+            type: TransactionType.expense, // Mark as expense for the payer
+            groupId: groupId,
+          );
+          transaction.set(_db.collection('expenses').doc(settlementId), settlementExpense.toJson());
+        }
+      });
+    } catch (e) {
+      print('Settle Debt failed: $e');
+      rethrow;
     }
   }
 
@@ -131,32 +169,6 @@ class FirestoreService {
       expenses.sort((a, b) => b.date.compareTo(a.date));
       return expenses;
     });
-  }
-
-  Stream<List<ExpenseModel>> getFamilyExpenses(List<String> memberIds) {
-    if (memberIds.isEmpty) return Stream.value([]);
-    return _db
-        .collection('expenses')
-        .where('userId', whereIn: memberIds)
-        .snapshots()
-        .map((snapshot) {
-      final expenses = snapshot.docs.map((doc) => ExpenseModel.fromJson(doc.data())).toList();
-      expenses.sort((a, b) => b.date.compareTo(a.date));
-      return expenses;
-    });
-  }
-
-  // Budget methods
-  Future<void> setBudget(BudgetModel budget) async {
-    await _db.collection('budgets').doc(budget.id).set(budget.toJson());
-  }
-
-  Stream<List<BudgetModel>> getBudgets(String userId) {
-    return _db
-        .collection('budgets')
-        .where('userId', isEqualTo: userId)
-        .snapshots()
-        .map((snapshot) => snapshot.docs.map((doc) => BudgetModel.fromJson(doc.data())).toList());
   }
 
   // Family methods
@@ -194,12 +206,29 @@ class FirestoreService {
     await _db.collection('groups').doc(group.id).set(group.toJson());
   }
 
+  Future<void> deleteGroup(String groupId) async {
+    await _db.collection('groups').doc(groupId).delete();
+  }
+
   Stream<List<GroupModel>> getUserGroups(String userId) {
     return _db
         .collection('groups')
         .where('members', arrayContains: userId)
         .snapshots()
         .map((snapshot) => snapshot.docs.map((doc) => GroupModel.fromJson(doc.data())).toList());
+  }
+
+  // Budget methods
+  Future<void> setBudget(BudgetModel budget) async {
+    await _db.collection('budgets').doc(budget.id).set(budget.toJson());
+  }
+
+  Stream<List<BudgetModel>> getBudgets(String userId) {
+    return _db
+        .collection('budgets')
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.map((doc) => BudgetModel.fromJson(doc.data())).toList());
   }
 
   // Invitation methods

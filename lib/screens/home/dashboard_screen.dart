@@ -22,7 +22,10 @@ class DashboardScreen extends ConsumerWidget {
 
     return Scaffold(
       body: expensesAsync.when(
-        data: (expenses) {
+        data: (allTransactions) {
+          final expenses = allTransactions.where((t) => t.type == TransactionType.expense).toList();
+          final incomes = allTransactions.where((t) => t.type == TransactionType.income).toList();
+
           return budgetsAsync.when(
             data: (budgets) {
               final prediction = MLService.predictNextMonthSpending(expenses);
@@ -42,7 +45,9 @@ class DashboardScreen extends ConsumerWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildBudgetStatusCard(context, expenses, budgets),
+                          _buildNetBalanceCard(context, expenses, incomes),
+                          const SizedBox(height: 16),
+                          _buildBudgetStatusCard(context, expenses, incomes, budgets),
                           const SizedBox(height: 16),
                           _buildMLInsightCard(context, prediction, expenses),
                           const SizedBox(height: 24),
@@ -52,7 +57,7 @@ class DashboardScreen extends ConsumerWidget {
                               children: [
                                 Expanded(flex: 2, child: _buildPieChart(context, expenses)),
                                 const SizedBox(width: 24),
-                                Expanded(flex: 1, child: _buildTransactions(context, expenses, ref)),
+                                Expanded(flex: 1, child: _buildTransactions(context, allTransactions, ref)),
                               ],
                             )
                           else
@@ -60,7 +65,7 @@ class DashboardScreen extends ConsumerWidget {
                               children: [
                                 _buildPieChart(context, expenses),
                                 const SizedBox(height: 24),
-                                _buildTransactions(context, expenses, ref),
+                                _buildTransactions(context, allTransactions, ref),
                               ],
                             ),
                           const SizedBox(height: 80),
@@ -76,7 +81,7 @@ class DashboardScreen extends ConsumerWidget {
           );
         },
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, s) => Center(child: Text('Error loading expenses: $e')),
+        error: (e, s) => Center(child: Text('Error loading transactions: $e')),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showAddExpense(context),
@@ -85,7 +90,46 @@ class DashboardScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildBudgetStatusCard(BuildContext context, List<ExpenseModel> expenses, List<BudgetModel> budgets) {
+  Widget _buildNetBalanceCard(BuildContext context, List<ExpenseModel> expenses, List<ExpenseModel> incomes) {
+    final theme = Theme.of(context);
+    final totalIncome = incomes.fold(0.0, (sum, t) => sum + t.amount);
+    final totalExpense = expenses.fold(0.0, (sum, t) => sum + t.amount);
+    final netBalance = totalIncome - totalExpense;
+
+    return Card(
+      elevation: 0,
+      color: theme.colorScheme.secondaryContainer.withOpacity(0.5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            _buildBalanceItem('Income', totalIncome, Colors.green),
+            Container(width: 1, height: 40, color: theme.colorScheme.outlineVariant),
+            _buildBalanceItem('Expenses', totalExpense, Colors.red),
+            Container(width: 1, height: 40, color: theme.colorScheme.outlineVariant),
+            _buildBalanceItem('Net', netBalance, netBalance >= 0 ? theme.colorScheme.primary : Colors.orange),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBalanceItem(String label, double amount, Color color) {
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+        const SizedBox(height: 4),
+        Text(
+          '₹${amount.toStringAsFixed(0)}',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBudgetStatusCard(BuildContext context, List<ExpenseModel> expenses, List<ExpenseModel> incomes, List<BudgetModel> budgets) {
     final theme = Theme.of(context);
     final totalBudget = budgets.firstWhere(
       (b) => b.category == 'Total' && b.period == 'Monthly', 
@@ -93,13 +137,20 @@ class DashboardScreen extends ConsumerWidget {
     );
 
     final now = DateTime.now();
-    final monthlyExpenses = expenses
+    final monthlyExpenseTotal = expenses
+        .where((e) => e.date.year == now.year && e.date.month == now.month)
+        .fold(0.0, (sum, e) => sum + e.amount);
+    
+    final monthlyIncomeTotal = incomes
         .where((e) => e.date.year == now.year && e.date.month == now.month)
         .fold(0.0, (sum, e) => sum + e.amount);
 
+    // Adjustment: Subtract income from expenses for budget status
+    final monthlyNetSpent = monthlyExpenseTotal - monthlyIncomeTotal;
+
     final bool hasBudget = totalBudget.amount > 0;
-    final bool isOver = hasBudget && monthlyExpenses > totalBudget.amount;
-    final double percent = hasBudget ? (monthlyExpenses / totalBudget.amount).clamp(0.0, 1.0) : 0.0;
+    final bool isOver = hasBudget && monthlyNetSpent > totalBudget.amount;
+    final double percent = hasBudget ? (monthlyNetSpent / totalBudget.amount).clamp(0.0, 1.0) : 0.0;
 
     return Card(
       elevation: 4,
@@ -121,7 +172,7 @@ class DashboardScreen extends ConsumerWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Monthly Budget Status', style: theme.textTheme.titleSmall?.copyWith(color: Colors.white70)),
+                Text('Monthly Budget Status (Net)', style: theme.textTheme.titleSmall?.copyWith(color: Colors.white70)),
                 IconButton(
                   onPressed: () => _showSetBudgetDialog(context, totalBudget.amount > 0 ? totalBudget : null, 'Total'),
                   icon: const Icon(Icons.edit, color: Colors.white, size: 18),
@@ -130,7 +181,7 @@ class DashboardScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              '₹${monthlyExpenses.toStringAsFixed(2)} / ₹${totalBudget.amount.toStringAsFixed(0)}',
+              '₹${monthlyNetSpent.toStringAsFixed(2)} / ₹${totalBudget.amount.toStringAsFixed(0)}',
               style: theme.textTheme.headlineSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
@@ -145,8 +196,8 @@ class DashboardScreen extends ConsumerWidget {
             Text(
               hasBudget 
                 ? (isOver 
-                    ? 'Over budget by ₹${(monthlyExpenses - totalBudget.amount).toStringAsFixed(0)} ⚠️' 
-                    : 'Under budget by ₹${(totalBudget.amount - monthlyExpenses).toStringAsFixed(0)} ✅')
+                    ? 'Over budget by ₹${(monthlyNetSpent - totalBudget.amount).toStringAsFixed(0)} ⚠️' 
+                    : 'Under budget by ₹${(totalBudget.amount - monthlyNetSpent).toStringAsFixed(0)} ✅')
                 : 'No budget set for this month',
               style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
             ),
@@ -207,6 +258,15 @@ class DashboardScreen extends ConsumerWidget {
     final theme = Theme.of(context);
     final Map<String, double> data = _getCategoryData(expenses);
 
+    if (data.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(20),
+          child: Center(child: Text('No expense data to show')),
+        ),
+      );
+    }
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -257,9 +317,9 @@ class DashboardScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildTransactions(BuildContext context, List<ExpenseModel> expenses, WidgetRef ref) {
+  Widget _buildTransactions(BuildContext context, List<ExpenseModel> allTransactions, WidgetRef ref) {
     final theme = Theme.of(context);
-    final List<ExpenseModel> recent = expenses.take(10).toList();
+    final List<ExpenseModel> recent = allTransactions.take(10).toList();
 
     return Card(
       child: Padding(
@@ -274,22 +334,29 @@ class DashboardScreen extends ConsumerWidget {
               physics: const NeverScrollableScrollPhysics(),
               itemCount: recent.length,
               itemBuilder: (context, index) {
-                final e = recent[index];
+                final t = recent[index];
+                final isIncome = t.type == TransactionType.income;
                 return ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: CircleAvatar(
-                    backgroundColor: theme.colorScheme.surfaceVariant,
-                    child: Text(e.category.split(' ').last),
+                    backgroundColor: isIncome ? Colors.green.withOpacity(0.1) : theme.colorScheme.surfaceVariant,
+                    child: Text(t.category.split(' ').last),
                   ),
-                  title: Text(e.category.split(' ').first, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                  subtitle: Text(e.date.toString().split(' ')[0], style: const TextStyle(fontSize: 12)),
+                  title: Text(t.category.split(' ').first, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: Text(t.date.toString().split(' ')[0], style: const TextStyle(fontSize: 12)),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text('₹${e.amount.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      Text(
+                        '${isIncome ? "+" : "-"}₹${t.amount.toStringAsFixed(0)}', 
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold, 
+                          color: isIncome ? Colors.green : Colors.red,
+                        )
+                      ),
                       IconButton(
-                        icon: const Icon(Icons.delete_outline, size: 20, color: Colors.red),
-                        onPressed: () => _deleteExpense(context, ref, e.id),
+                        icon: const Icon(Icons.delete_outline, size: 20, color: Colors.white),
+                        onPressed: () => _deleteExpense(context, ref, t.id),
                       ),
                     ],
                   ),
@@ -306,8 +373,8 @@ class DashboardScreen extends ConsumerWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Expense'),
-        content: const Text('Are you sure you want to delete this expense?'),
+        title: const Text('Delete Transaction'),
+        content: const Text('Are you sure you want to delete this transaction?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           TextButton(
@@ -335,11 +402,11 @@ class DashboardScreen extends ConsumerWidget {
               children: [
                 Icon(Icons.auto_awesome, color: theme.colorScheme.secondary, size: 20),
                 const SizedBox(width: 8),
-                Text('ML Prediction', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+                Text('Spending Prediction', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
               ],
             ),
             const SizedBox(height: 12),
-            Text('Estimated next month: ₹${prediction.toStringAsFixed(2)}', style: theme.textTheme.bodyMedium),
+            Text('Estimated next month spending: ₹${prediction.toStringAsFixed(2)}', style: theme.textTheme.bodyMedium),
             const SizedBox(height: 16),
             SizedBox(
               height: 100,

@@ -1,14 +1,17 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+enum TransactionType { expense, income }
+
 class ExpenseModel {
   final String id;
-  final String userId; // Payer
+  final String userId;
   final double amount;
   final String category;
   final DateTime date;
   final String? groupId;
-  final List<String>? splitWith; // List of user IDs to split with. If null/empty and groupId present, split with all members.
+  final List<String>? splitWith;
   final String? note;
+  final TransactionType type;
 
   ExpenseModel({
     required this.id,
@@ -19,6 +22,7 @@ class ExpenseModel {
     this.groupId,
     this.splitWith,
     this.note,
+    this.type = TransactionType.expense,
   });
 
   Map<String, dynamic> toJson() => {
@@ -30,6 +34,7 @@ class ExpenseModel {
         'groupId': groupId,
         'splitWith': splitWith,
         'note': note,
+        'type': type.name,
       };
 
   factory ExpenseModel.fromJson(Map<String, dynamic> json) => ExpenseModel(
@@ -41,5 +46,6 @@ class ExpenseModel {
         groupId: json['groupId'] as String?,
         splitWith: json['splitWith'] != null ? List<String>.from(json['splitWith']) : null,
         note: json['note'] as String?,
+        type: TransactionType.values.byName(json['type'] ?? 'expense'),
       );
 }

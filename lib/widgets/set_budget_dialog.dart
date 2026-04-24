@@ -100,14 +100,14 @@ class _SetBudgetDialogState extends ConsumerState<SetBudgetDialog> {
             DropdownButtonFormField<String>(
               value: _selectedCategory,
               items: _categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: widget.existingBudget != null ? null : (v) => setState(() => _selectedCategory = v!),
+              onChanged: (v) => setState(() => _selectedCategory = v!),
               decoration: const InputDecoration(labelText: 'Category'),
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               value: _selectedPeriod,
               items: _periods.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
-              onChanged: widget.existingBudget != null ? null : (v) => setState(() => _selectedPeriod = v!),
+              onChanged: (v) => setState(() => _selectedPeriod = v!),
               decoration: const InputDecoration(labelText: 'Period'),
             ),
           ],

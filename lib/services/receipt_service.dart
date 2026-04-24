@@ -6,7 +6,6 @@ import 'package:image_picker/image_picker.dart';
 final receiptServiceProvider = Provider<ReceiptService>((ref) => ReceiptService());
 
 class ReceiptService {
-  // Using the provided API Key
   static const String _apiKey = 'AIzaSyCd4ttVJggytpLD4sboBeWAfmSALOQDG-g';
 
   final _model = GenerativeModel(
@@ -20,15 +19,19 @@ class ReceiptService {
     return await _picker.pickImage(source: source);
   }
 
-  Future<Map<String, dynamic>?> analyzeReceipt(XFile imageFile) async {
+  /// Analyzes a receipt and returns a list of items grouped by category.
+  /// Example return: [{"amount": 50.0, "category": "Food 🍔"}, {"amount": 20.0, "category": "Bills 💡"}]
+  Future<List<Map<String, dynamic>>?> analyzeReceiptMulti(XFile imageFile) async {
     try {
       final bytes = await imageFile.readAsBytes();
       
-      final prompt = 'Analyze this receipt image. Extract the total amount and the category of the expense. '
-          'Provide the output in strict JSON format like this: {"amount": 120.50, "category": "Food 🍔"}. '
-          'Use emojis in category names if possible to match existing patterns: '
-          'Food 🍔, Travel ✈️, Shopping 🛍️, Bills 💡, Health 💊, Fuel ⛽, EMI/Loan 🏦, Emergency 🚨, Entertainment 🎬, Education 📚. '
-          'If it doesn\'t fit these, suggest a new one with an emoji.';
+      final prompt = 'Analyze this receipt image. It may contain items from different categories (e.g., groceries, electronics, food, etc.). '
+          '1. Identify all items and their prices.\n'
+          '2. Group these items into logical categories such as: Food 🍔, Travel ✈️, Shopping 🛍️, Bills 💡, Health 💊, Fuel ⛽, EMI/Loan 🏦, Emergency 🚨, Entertainment 🎬, Education 📚.\n'
+          '3. If an item doesn\'t fit these, create a NEW specific category for it with a relevant emoji.\n'
+          '4. Sum up the amounts for each category.\n'
+          '5. Return ONLY a strict JSON array of objects, each containing "amount" (number) and "category" (string with emoji).\n'
+          'Example format: [{"amount": 45.99, "category": "Groceries 🛒"}, {"amount": 15.50, "category": "Food 🍔"}]';
 
       final content = [
         Content.multi([
@@ -41,17 +44,22 @@ class ReceiptService {
       final text = response.text;
       
       if (text != null) {
-        // Find JSON block in the response to handle cases where Gemini adds conversational text
-        final jsonMatch = RegExp(r'\{.*\}', dotAll: true).stringMatch(text);
+        // More robust JSON extraction
+        final jsonMatch = RegExp(r'\[.*\]', dotAll: true).stringMatch(text);
         if (jsonMatch != null) {
-          final decoded = jsonDecode(jsonMatch) as Map<String, dynamic>;
-          // Ensure amount is a double
-          if (decoded['amount'] is String) {
-            decoded['amount'] = double.tryParse(decoded['amount']) ?? 0.0;
-          } else if (decoded['amount'] is int) {
-            decoded['amount'] = (decoded['amount'] as int).toDouble();
-          }
-          return decoded;
+          final List<dynamic> decodedList = jsonDecode(jsonMatch);
+          return decodedList.map((item) {
+            double amount = 0.0;
+            if (item['amount'] is num) {
+              amount = (item['amount'] as num).toDouble();
+            } else if (item['amount'] is String) {
+              amount = double.tryParse(item['amount'].replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0.0;
+            }
+            return {
+              'amount': amount,
+              'category': item['category'] as String? ?? 'Other 📦',
+            };
+          }).toList();
         }
       }
       return null;
@@ -59,5 +67,13 @@ class ReceiptService {
       print('Error analyzing receipt: $e');
       return null;
     }
+  }
+
+  Future<Map<String, dynamic>?> analyzeReceipt(XFile imageFile) async {
+    final results = await analyzeReceiptMulti(imageFile);
+    if (results != null && results.isNotEmpty) {
+      return results.first;
+    }
+    return null;
   }
 }

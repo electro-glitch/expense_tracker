@@ -138,10 +138,11 @@ class GroupsScreen extends ConsumerWidget {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () async {
-              if (nameController.text.trim().isEmpty) return;
+              final name = nameController.text.trim();
+              if (name.isEmpty) return;
               final group = GroupModel(
                 id: DateTime.now().millisecondsSinceEpoch.toString(),
-                name: nameController.text.trim(),
+                name: name,
                 members: [uid],
                 balances: {uid: 0.0},
               );
@@ -174,93 +175,176 @@ class _GroupCard extends ConsumerWidget {
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: theme.colorScheme.outlineVariant.withOpacity(0.5))
       ),
-      child: InkWell(
-        onTap: () {},
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Text(
-                      group.name,
-                      style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    group.name,
+                    style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                Row(
+                  children: [
+                    IconButton(
+                      onPressed: () => _showInviteDialog(context, ref),
+                      icon: const Icon(Icons.person_add_alt_1_outlined),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: () => _showInviteDialog(context, ref),
-                    icon: const Icon(Icons.person_add_alt_1_outlined),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '${group.members.length} members',
-                style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
-              ),
-              const Divider(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    myBalance >= 0 ? (myBalance == 0 ? 'Settled up' : 'You are owed') : 'You owe',
-                    style: theme.textTheme.titleMedium,
-                  ),
-                  Text(
-                    '₹ ${myBalance.abs().toStringAsFixed(2)}',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: myBalance == 0 ? theme.colorScheme.outline : (myBalance > 0 ? Colors.green : Colors.red),
+                    IconButton(
+                      onPressed: () => _confirmDeleteGroup(context, ref),
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
                     ),
-                  ),
-                ],
-              ),
-              if (myBalance != 0) ...[
-                const SizedBox(height: 8),
-                _buildBalanceDetails(context, ref),
+                  ],
+                ),
               ],
-            ],
-          ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${group.members.length} members',
+              style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
+            ),
+            const Divider(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  myBalance >= 0 ? (myBalance == 0 ? 'Settled up' : 'You are owed') : 'You owe',
+                  style: theme.textTheme.titleMedium,
+                ),
+                Text(
+                  '₹ ${myBalance.abs().toStringAsFixed(2)}',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: myBalance == 0 ? theme.colorScheme.outline : (myBalance > 0 ? Colors.green : Colors.red),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Text('Simplified Settlements:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+            const SizedBox(height: 8),
+            _buildSimplifiedSettlements(context, ref),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildBalanceDetails(BuildContext context, WidgetRef ref) {
-    final myBalance = group.balances[currentUserId] ?? 0.0;
-    final List<Widget> details = [];
+  Future<void> _confirmDeleteGroup(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Group?'),
+        content: const Text('Are you sure you want to delete this group? This action cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
 
-    group.balances.forEach((uid, balance) {
-      if (uid == currentUserId) return;
-      
-      if (myBalance < 0 && balance > 0) {
-        details.add(
-          FutureBuilder<UserModel?>(
-            future: ref.read(firestoreServiceProvider).getUser(uid).first,
-            builder: (context, snapshot) {
-              final name = snapshot.data?.name ?? '...';
-              return Text('You owe $name', style: const TextStyle(fontSize: 12, color: Colors.grey));
-            },
-          )
+    if (confirmed == true) {
+      await ref.read(firestoreServiceProvider).deleteGroup(group.id);
+    }
+  }
+
+  Widget _buildSimplifiedSettlements(BuildContext context, WidgetRef ref) {
+    final settlements = group.getSimplifiedSettlements();
+    if (settlements.isEmpty) {
+      return const Text('All settled up!', style: TextStyle(fontSize: 12, color: Colors.grey));
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: settlements.map((s) {
+        final isFromMe = s['from'] == currentUserId;
+        final isToMe = s['to'] == currentUserId;
+
+        if (!isFromMe && !isToMe) return const SizedBox.shrink();
+
+        return FutureBuilder<UserModel?>(
+          future: ref.read(firestoreServiceProvider).getUser(isFromMe ? s['to'] : s['from']).first,
+          builder: (context, snapshot) {
+            final otherUser = snapshot.data;
+            final name = otherUser?.name ?? '...';
+            final amount = (s['amount'] as double);
+            
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      isFromMe ? 'You owe ₹${amount.toStringAsFixed(2)} to $name' : '$name owes you ₹${amount.toStringAsFixed(2)}',
+                      style: TextStyle(
+                        fontSize: 13, 
+                        color: isFromMe ? Colors.red : Colors.green
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => _confirmSettleDebt(context, ref, s['from'], s['to'], amount, name),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                      minimumSize: const Size(0, 30),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('Settle', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+              ),
+            );
+          },
         );
-      } else if (myBalance > 0 && balance < 0) {
-        details.add(
-          FutureBuilder<UserModel?>(
-            future: ref.read(firestoreServiceProvider).getUser(uid).first,
-            builder: (context, snapshot) {
-              final name = snapshot.data?.name ?? '...';
-              return Text('$name owes you', style: const TextStyle(fontSize: 12, color: Colors.grey));
-            },
-          )
-        );
+      }).toList(),
+    );
+  }
+
+  Future<void> _confirmSettleDebt(BuildContext context, WidgetRef ref, String fromId, String toId, double amount, String otherName) async {
+    final isMePaying = fromId == currentUserId;
+    
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Settle Debt?'),
+        content: Text(isMePaying 
+            ? 'Are you sure you want to mark that you paid ₹${amount.toStringAsFixed(2)} to $otherName?'
+            : 'Are you sure you want to mark that $otherName paid you ₹${amount.toStringAsFixed(2)}?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await ref.read(firestoreServiceProvider).settleDebt(group.id, fromId, toId, amount);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Debt settled successfully!')),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to settle debt: $e'), backgroundColor: Colors.red),
+          );
+        }
       }
-    });
-
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: details);
+    }
   }
 
   void _showInviteDialog(BuildContext context, WidgetRef ref) {
@@ -271,14 +355,23 @@ class _GroupCard extends ConsumerWidget {
         title: const Text('Invite to Group'),
         content: TextField(
           controller: emailController,
-          decoration: const InputDecoration(labelText: 'Email Address', hintText: 'friend@example.com'),
+          decoration: const InputDecoration(
+            labelText: 'Email Address', 
+            hintText: 'friend@example.com',
+          ),
+          keyboardType: TextInputType.emailAddress,
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () async {
               final email = emailController.text.trim().toLowerCase();
-              if (email.isEmpty) return;
+              if (email.isEmpty || !email.contains('@')) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please enter a valid email address'), backgroundColor: Colors.red),
+                );
+                return;
+              }
               
               final user = await ref.read(firestoreServiceProvider).getUserByEmail(email);
               if (user != null) {
