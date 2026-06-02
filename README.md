@@ -139,10 +139,6 @@ Add screenshots here.
 
 ![Expense Entry](screenshots/expense_entry.png)
 
-### Analytics
-
-![Analytics](screenshots/analytics.png)
-
 ---
 
 ## Documentation
